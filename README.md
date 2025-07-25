@@ -1,6 +1,6 @@
 # SIDDA: SInkhorn Dynamic Domain Adaptation for Image Classification
 
-[![Code License](https://img.shields.io/badge/Code%20License-Apache_2.0-green.svg)](https://github.com/snehjp2/GCNNMorphology/blob/main/LICENSE)  
+[![Code License](https://img.shields.io/badge/Code%20License-Apache_2.0-green.svg)](https://github.com/deepskies/SIDDA/blob/main/LICENSE)  
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/release/python-390/)
 
 ![Pipeline Diagram](plots/pipeline.png)

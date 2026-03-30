@@ -1,9 +1,13 @@
 from typing import Callable, Optional
+import os
+from glob import glob
+import json
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms
+from pre.load import fits2numpy
+from pre.preprocess import preprocess_lognorm
 
 
 class Shapes(Dataset):
@@ -281,12 +285,70 @@ class MRSSC2(Dataset):
         return self.length
 
 
+class Astrogeo(Dataset):
+    def __init__(
+        self,
+        input_path,
+        output_path: Optional[Callable] = None,
+        transform: Optional[Callable] = None,
+        target_domain: bool = False
+    ):
+        self.transform = transform
+        self.target_domain = target_domain
+
+        if target_domain:
+            self.files = self._scan(input_path)
+        else:
+            self.samples = []
+
+            classes = sorted(os.listdir(input_path))
+            self.class_to_idx = {c: i for i, c in enumerate(classes)}
+
+            for cls in classes:
+                cls_path = os.path.join(input_path, cls)
+                for f in glob(os.path.join(cls_path, "*.fits")):
+                    self.samples.append((f, self.class_to_idx[cls]))
+
+            self.targets = [label for _, label in self.samples]
+            # print(self.samples[:5])
+
+    def _scan(self, root_dir: str, json_file: str = "/home/zagorulia/ml/scripts/filenames.json"):
+        with open(json_file, "r", encoding="utf-8") as f:
+            files = json.load(f)
+        files = [
+            os.path.join(root_dir, file.split("_")[0], file) for file in files
+        ]
+        files.sort()
+        return files
+
+    def __len__(self):
+        return len(self.files) if self.target_domain else len(self.samples)
+
+    def __getitem__(self, idx):
+        if self.target_domain:
+            path = self.files[idx]
+        else:
+            path, label = self.samples[idx]
+        data_raw = fits2numpy(path)
+        data = preprocess_lognorm(data_raw)
+        x = torch.from_numpy(data).unsqueeze(0)
+
+        if self.transform is not None:
+            x = self.transform(x)
+
+        if self.target_domain:
+            return x
+    
+        return x, label
+
+
 dataset_dict = {
     "shapes": Shapes,
     "astro_objects": AstroObjects,
     "mnist_m": MnistM,
     "gz_evo": GZEvo,
-    "mrssc2": MRSSC2
+    "mrssc2": MRSSC2, 
+    "astrogeo": Astrogeo,
 }
 
 gz_evo_classes = (
@@ -301,11 +363,13 @@ mnist_m_classes = ("0", "1", "2", "3", "4", "5", "6", "7", "8", "9")
 shapes_classes = ("line", "rectangle", "circle")
 astro_objects_classes = ("elliptical", "spiral", "stars")
 mrssc2_classes = ("city", "coast", "desert", "farmland", "lake", "mountain", "river")
+astrogeo_classes = ("0", "1")
 
 classes_dict = {
     "shapes": shapes_classes,
     "astro_objects": astro_objects_classes,
     "mnist_m": mnist_m_classes,
     "gz_evo": gz_evo_classes,
-    "mrssc2": mrssc2_classes
+    "mrssc2": mrssc2_classes,
+    "astrogeo": astrogeo_classes,
 }

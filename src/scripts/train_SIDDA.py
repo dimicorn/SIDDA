@@ -14,6 +14,7 @@ from models import model_dict
 from torch import nn, optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
+import torchvision.transforms.v2 as v2 
 from tqdm import tqdm
 
 
@@ -94,6 +95,7 @@ def train_SIDDA(
     js_distances, epoch_js_distances = [], []
     blur_vals, epoch_blur_vals = [], []
     eta_1_vals, eta_2_vals = [], []
+    total_steps = min(len(train_dataloader), len(target_dataloader))
 
     print("Training Started!")
 
@@ -108,7 +110,8 @@ def train_SIDDA(
         classification_losses, DA_losses = [], []
 
         for i, (batch, target_batch) in tqdm(
-            enumerate(zip(train_dataloader, target_dataloader))
+            enumerate(zip(train_dataloader, target_dataloader)),
+            total=total_steps,
         ):
             source_inputs, source_outputs = batch
             source_inputs, source_outputs = (
@@ -116,7 +119,7 @@ def train_SIDDA(
                 source_outputs.to(device),
             )
 
-            target_inputs, _ = target_batch
+            target_inputs = target_batch
             target_inputs = target_inputs.to(device).float()
 
             optimizer.zero_grad()
@@ -232,11 +235,8 @@ def train_SIDDA(
                         source_inputs.to(device).float(),
                         source_outputs.to(device),
                     )
-                    target_inputs, _ = target_batch
-                    target_inputs, _ = (
-                        target_inputs.to(device).float(),
-                        _.to(device),
-                    )
+                    target_inputs = target_batch
+                    target_inputs = target_inputs.to(device).float()
 
                     if epoch < warmup:
                         _, source_preds = model(source_inputs)
@@ -666,6 +666,31 @@ def main(config):
             ]
         )
 
+    elif dataset_name == "astrogeo":
+        train_transform = transforms.Compose(
+            [
+                v2.RandomHorizontalFlip(p=0.5),
+                v2.RandomVerticalFlip(p=0.5),
+                v2.RandomApply(
+                    [
+                        v2.RandomAffine(
+                            degrees=10,
+                            translate=(0.06, 0.06),
+                            scale=(0.9, 1.1),
+                            interpolation=v2.InterpolationMode.BILINEAR,
+                        )
+                    ],
+                    p=0.8,
+                ),
+                v2.RandomRotation(degrees=10),
+                v2.RandomApply(
+                    [v2.GaussianBlur(kernel_size=5, sigma=(0.1, 1.5))], p=0.25
+                ),
+                v2.ToDtype(torch.float32, scale=False),
+            ]
+        )
+        val_transform = v2.ToDtype(torch.float32, scale=False)
+
     # Function to split dataset into train and validation subsets
     def split_dataset(dataset, val_size, train_transform, val_transform):
         val_size = int(len(dataset) * val_size)
@@ -704,6 +729,7 @@ def main(config):
             "target_output_path"
         ],  ## outputs dont get used in training
         transform=train_transform,
+        target_domain=True,
     )
 
     # Split target dataset into train and validation sets
@@ -723,12 +749,18 @@ def main(config):
         batch_size=config["parameters"]["batch_size"],
         shuffle=True,
         pin_memory=True,
+        num_workers=config["parameters"]["num_workers"],
+        persistent_workers=True,
+        drop_last=True,
     )
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=config["parameters"]["batch_size"],
         shuffle=False,
         pin_memory=True,
+        num_workers=config["parameters"]["num_workers"],
+        persistent_workers=True,
+        drop_last=True,
     )
 
     target_dataloader = DataLoader(
@@ -736,12 +768,18 @@ def main(config):
         batch_size=config["parameters"]["batch_size"],
         shuffle=True,
         pin_memory=True,
+        num_workers=config["parameters"]["num_workers"],
+        persistent_workers=True,
+        drop_last=True,
     )
     target_val_dataloader = DataLoader(
         val_target_dataset,
         batch_size=config["parameters"]["batch_size"],
         shuffle=False,
         pin_memory=True,
+        num_workers=config["parameters"]["num_workers"],
+        persistent_workers=True,
+        drop_last=True,
     )
 
     timestr = time.strftime("%Y%m%d-%H%M%S")

@@ -3,6 +3,7 @@ import torch.nn as nn
 from escnn import gspaces
 from escnn import nn as escnn_nn
 from torch.nn import functional as F
+from torchvision import models
 from torchsummary import summary
 
 
@@ -222,6 +223,46 @@ class ENN(nn.Module):
         return latent_space, x
 
 
+def adapt_resnet_to_1ch(model):
+    old_conv = model.conv1
+
+    new_conv = torch.nn.Conv2d(
+        in_channels=1,
+        out_channels=old_conv.out_channels,
+        kernel_size=old_conv.kernel_size,
+        stride=old_conv.stride,
+        padding=old_conv.padding,
+        bias=False,
+    )
+
+    # convert RGB → mono by averaging filters
+    with torch.no_grad():
+        new_conv.weight[:] = old_conv.weight.mean(dim=1, keepdim=True)
+
+    model.conv1 = new_conv
+    return model
+
+
+class ResNet18Custom(nn.Module):
+    def __init__(
+        self,
+        num_classes: int = 2,
+        pretrained: bool = True,
+    ):
+        super().__init__()
+
+        weights = models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        self.backbone = models.resnet18(weights=weights)
+        self.backbone = adapt_resnet_to_1ch(self.backbone)
+        in_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Identity()
+
+        self.fc = nn.Linear(in_features, num_classes)
+
+    def forward(self, x):
+        latent_space = self.backbone(x)   # shape: [B, 512]
+        logits = self.fc(latent_space)    # shape: [B, num_classes]
+        return latent_space, logits
 ##############################################################################################
 
 
@@ -278,6 +319,10 @@ def d4_mrssc2():
     model = ENN(num_channels=3, num_classes=7, N=4, dihedral=True, input_size = (100, 100))
     return model
 
+def cnn_astrogeo():
+    model = ResNet18Custom()
+    return model
+
 
 ## other order D_N models can be constructed by specifcying dihedral = True with varying N
 ## cyclic group models can be constructed by specifying dihedral = False with varying N
@@ -287,13 +332,15 @@ astro_objects_models = {"cnn": cnn_astro_objects, "d4": d4_astro_objects}
 mnistm_models = {"cnn": cnn_mnistm, "d4": d4_mnistm}
 gz_evo_models = {"cnn": cnn_gzevo, "d4": d4_gzevo}
 mrssc2_models = {"cnn": cnn_mrssc2, "d4": d4_mrssc2}
+astrogeo_models = {"cnn": cnn_astrogeo}
 
 model_dict = {
     "shapes": shapes_models,
     "astro_objects": astro_objects_models,
     "mnist_m": mnistm_models,
     "gz_evo": gz_evo_models,
-    "mrssc2": mrssc2_models
+    "mrssc2": mrssc2_models,
+    "astrogeo": astrogeo_models,
 }
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 import argparse
 import os
+from glob import glob
 
 import matplotlib.pyplot as plt
+from PIL import Image
 import numpy as np
 import pandas as pd
 import seaborn as sn
@@ -11,9 +13,111 @@ import yaml
 from dataset import classes_dict, dataset_dict
 from models import model_dict
 from sklearn.metrics import classification_report, confusion_matrix
-from torch.utils.data import DataLoader
-from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader, Subset
+from torchvision import transforms, models
+import torchvision.transforms.v2 as v2 
 from tqdm import tqdm
+from pre.load import fits2numpy
+from pre.preprocess import preprocess_lognorm
+
+
+class FITSFolder(Dataset):
+    def __init__(self, root, transform=None):
+        self.transform = transform
+        self.samples = []
+
+        classes = sorted(os.listdir(root))
+        self.class_to_idx = {c: i for i, c in enumerate(classes)}
+
+        for cls in classes:
+            cls_path = os.path.join(root, cls)
+            for f in glob(os.path.join(cls_path, "*.fits")):
+                self.samples.append((f, self.class_to_idx[cls]))
+
+        self.targets = [label for _, label in self.samples]
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        path, label = self.samples[idx]
+        data_raw = fits2numpy(path)
+        data = preprocess_lognorm(data_raw)
+        # data_lognorm = preprocess_lognorm(data_raw)
+        # data = np.stack([data_pre, data_lognorm], axis=0)
+
+        if self.transform:
+            img = Image.fromarray(data, mode="F")
+            x = self.transform(img)
+        else:
+            x = torch.from_numpy(data).unsqueeze(0)
+
+        return x, label
+
+
+class FilterAndRemap(Dataset):
+    """
+    Keeps only samples whose original label is in `keep`.
+    Remaps original labels -> {0,1} using `remap` dict.
+    """
+
+    def __init__(self, base_ds, keep, remap):
+        self.base_ds = base_ds
+        self.keep = set(keep)
+        self.remap = remap
+
+        # works for ImageFolder / datasets with .targets
+        targets = getattr(base_ds, "targets")
+        self.indices = [i for i, y in enumerate(targets) if y in self.keep]
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, i):
+        x, y = self.base_ds[self.indices[i]]
+        y = self.remap[y]
+        return x, y
+
+def adapt_resnet_to_1ch(model):
+    old_conv = model.conv1
+
+    new_conv = torch.nn.Conv2d(
+        in_channels=1,
+        out_channels=old_conv.out_channels,
+        kernel_size=old_conv.kernel_size,
+        stride=old_conv.stride,
+        padding=old_conv.padding,
+        bias=False,
+    )
+
+    # convert RGB → mono by averaging filters
+    with torch.no_grad():
+        new_conv.weight[:] = old_conv.weight.mean(dim=1, keepdim=True)
+
+    model.conv1 = new_conv
+    return model
+
+
+class ResNet18Custom(nn.Module):
+    def __init__(
+        self,
+        num_classes: int = 2,
+        pretrained: bool = True,
+    ):
+        super().__init__()
+
+        weights = models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        self.backbone = models.resnet18(weights=weights)
+        self.backbone = adapt_resnet_to_1ch(self.backbone)
+        in_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Identity()
+
+        self.fc = nn.Linear(in_features, num_classes)
+
+    def forward(self, x):
+        latent_space = self.backbone(x)   # shape: [B, 512]
+        logits = self.fc(latent_space)    # shape: [B, num_classes]
+        return latent_space, logits
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -38,7 +142,7 @@ def load_models(directory_path: str,
         if file_name.endswith(".pt"):
             file_path = os.path.join(directory_path, file_name)
             print(f"Loading {model_name} from {file_path}...")
-            model = model_dict[dataset_name][model_name]()
+            model = ResNet18Custom()
             model.eval()
             model.load_state_dict(torch.load(file_path, map_location=device))
 
@@ -184,8 +288,25 @@ def main(
                 transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
             ]
         )
+    elif dataset == "astrogeo":
+        transform = v2.ToDtype(torch.float32, scale=False)
 
-    test_dataset = dataset_dict[dataset](x_test_path, y_test_path, transform=transform)
+    # test_dataset = dataset_dict[dataset](x_test_path, y_test_path, transform=transform, target_domain=True)
+    # test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=True)
+
+    # test_dataset = FITSFolder("/data/zagorulia/val_fits")
+    # c_idx = test_dataset.class_to_idx["0"]
+    # d_idx = test_dataset.class_to_idx["2"]
+    # final_test_ds = FilterAndRemap(
+    #     base_ds=test_dataset,
+    #     keep=[c_idx, d_idx],
+    #     remap={c_idx: 0, d_idx: 1},
+    # )
+    # filtered_class_names = ["point", "jet"]
+    # test_dataloader = DataLoader(final_test_ds, batch_size=128, shuffle=True)
+
+    test_dataset = FITSFolder("/data/zagorulia/synt_14_02_26")
+    filtered_class_names = ["point", "jet"]
     test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=True)
 
     models = load_models(model_dir, model_name, dataset)
@@ -196,7 +317,7 @@ def main(
     for model, model_file_name in models:
         model_metrics = {
             class_name: {"precision": [], "recall": [], "f1-score": [], "support": []}
-            for class_name in classes
+            for class_name in filtered_class_names
         }
         model_metrics["accuracy"] = []
         model_metrics["macro avg"] = {
@@ -218,7 +339,7 @@ def main(
             model_name=model_name,
             save_dir=model_dir,
             output_name=f"{output_name}_{model_file_name}",
-            classes=classes,
+            classes=filtered_class_names,
         )
         model_metrics = full_report
 
@@ -242,10 +363,10 @@ if __name__ == "__main__":
         "--model_path", type=str, required=True, help="Path to the trained models"
     )
     parser.add_argument(
-        "--x_test_path", type=str, required=True, help="Path to the x_test data"
+        "--x_test_path", type=str, required=False, help="Path to the x_test data"
     )
     parser.add_argument(
-        "--y_test_path", type=str, required=True, help="Path to the y_test data"
+        "--y_test_path", type=str, required=False, help="Path to the y_test data"
     )
     parser.add_argument(
         "--output_name",

@@ -298,18 +298,18 @@ def main(
     # test_dataset = dataset_dict[dataset](x_test_path, y_test_path, transform=transform, target_domain=True)
     # test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=True)
 
-    test_dataset = FITSFolder("/data/zagorulia/val_fits")
-    c_idx = test_dataset.class_to_idx["0"]
-    d_idx = test_dataset.class_to_idx["2"]
-    final_test_ds = FilterAndRemap(
-        base_ds=test_dataset,
-        keep=[c_idx, d_idx],
-        remap={c_idx: 0, d_idx: 1},
-    )
-    test_dataloader = DataLoader(final_test_ds, batch_size=128, shuffle=True)
+    # test_dataset = FITSFolder("/data/zagorulia/val_fits")
+    # c_idx = test_dataset.class_to_idx["0"]
+    # d_idx = test_dataset.class_to_idx["2"]
+    # final_test_ds = FilterAndRemap(
+    #     base_ds=test_dataset,
+    #     keep=[c_idx, d_idx],
+    #     remap={c_idx: 0, d_idx: 1},
+    # )
+    # test_dataloader = DataLoader(final_test_ds, batch_size=128, shuffle=True)
 
-    # test_dataset = FITSFolder("/data/zagorulia/synt_14_02_26")
-    # test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=True)
+    test_dataset = FITSFolder("/data/zagorulia/synt_14_02_26")
+    test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=True)
 
     filtered_class_names = ["Compact", "Extended"]
 

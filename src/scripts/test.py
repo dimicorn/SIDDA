@@ -43,8 +43,6 @@ class FITSFolder(Dataset):
         path, label = self.samples[idx]
         data_raw = fits2numpy(path)
         data = preprocess_lognorm(data_raw)
-        # data_lognorm = preprocess_lognorm(data_raw)
-        # data = np.stack([data_pre, data_lognorm], axis=0)
 
         if self.transform:
             img = Image.fromarray(data, mode="F")
@@ -52,7 +50,7 @@ class FITSFolder(Dataset):
         else:
             x = torch.from_numpy(data).unsqueeze(0)
 
-        return x, label
+        return x, label, path
 
 
 class FilterAndRemap(Dataset):
@@ -74,9 +72,9 @@ class FilterAndRemap(Dataset):
         return len(self.indices)
 
     def __getitem__(self, i):
-        x, y = self.base_ds[self.indices[i]]
+        x, y, path = self.base_ds[self.indices[i]]
         y = self.remap[y]
-        return x, y
+        return x, y, path
 
 def adapt_resnet_to_1ch(model):
     old_conv = model.conv1
@@ -181,62 +179,92 @@ def compute_metrics(
         sklearn_report (dict): sklearn classification report
     """
 
-    y_pred, y_true, feature_maps = [], [], []
+    y_pred, feature_maps = [], []
+    paths_all, intensities_all = [], []
     if torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
     model.to(device)
     model.eval()
 
-    for batch in tqdm(test_loader, unit="batch", total=len(test_loader)):
-        input, output = batch
-        input, _ = input.to(device).float(), output.to(device)
-        features, preds = model(input)
-        _, predicted_class = torch.max(preds.data, 1)
-        feature_maps.extend(features.cpu().numpy())
+    # for batch, paths, intensity in tqdm(test_loader, unit="batch", total=len(test_loader)):
+    #     input = batch
+    #     input = input.to(device).float()
+    #     features, preds = model(input)
+    #     _, predicted_class = torch.max(preds.data, 1)
+    #     feature_maps.extend(features.cpu().numpy())
 
+    #     y_pred.extend(predicted_class.cpu().numpy())
+    #     paths.extend(path)
+    #     y_true.extend(output.cpu().numpy())
+    
+    results = {}
+    for x, paths, intensities in tqdm(test_loader, unit="batch", total=len(test_loader)):
+        x = x.to(device).float()
+
+        features, logits = model(x)
+
+        probs = torch.softmax(logits, dim=1)[:, 1]
+        predicted_class = torch.argmax(logits, dim=1)
+
+        feature_maps.extend(features.detach().cpu().numpy())
         y_pred.extend(predicted_class.cpu().numpy())
-        y_true.extend(output.cpu().numpy())
+        paths_all.extend(paths)
+        intensities_all.extend(intensities.cpu().numpy())
 
-    y_pred, y_true = np.asarray(y_pred), np.asarray(y_true)
-    feature_maps = np.asarray(feature_maps)
-    flattened_features = feature_maps.reshape(feature_maps.shape[0], -1)
-    features_dir = os.path.join(save_dir, "latent_vectors")
-    if not os.path.exists(features_dir):
-        os.makedirs(features_dir)
-    y_pred_dir = os.path.join(save_dir, "y_pred")
-    if not os.path.exists(y_pred_dir):
-        os.makedirs(y_pred_dir)
-    np.save(
-        f"{features_dir}/latent_vecs_{model_name}_{output_name}.npy", flattened_features
-    )
-    np.save(f"{y_pred_dir}/y_pred_{model_name}_{output_name}.npy", y_pred)
+        for i, path in enumerate(paths):
+            results[path] = {
+                "prob": float(probs[i].detach().cpu().item()),
+                "pred": int(predicted_class[i].detach().cpu().item()),
+                "intensity": float(intensities[i].detach().cpu().item()),
+            }
 
-    confusion_matrix_dir = os.path.join(save_dir, "confusion_matrix")
-    if not os.path.exists(confusion_matrix_dir):
-        os.makedirs(confusion_matrix_dir)
+    df_results = pd.DataFrame.from_dict(results, orient="index")
+    df_results = df_results.reset_index().rename(columns={"index": "path"})
 
-    sklearn_report = classification_report(
-        y_true, y_pred, output_dict=True, target_names=classes
-    )
+    df_results.to_csv(f"{model_name}_astrogeo_predictions.csv", index=False)
 
-    cf_matrix = confusion_matrix(y_true, y_pred)
-    df_cm = pd.DataFrame(
-        cf_matrix / np.sum(cf_matrix, axis=1)[:, None],
-        index=[i for i in classes],
-        columns=[i for i in classes],
-    )
-    plt.figure(figsize=(12, 7))
-    sn.heatmap(df_cm, annot=True)
-    plt.title(f"{model_name} Confusion Matrix")
-    plt.savefig(
-        os.path.join(
-            confusion_matrix_dir, f"confusion_matrix_{model_name}_{output_name}.png"
-        ),
-        bbox_inches="tight",
-    )
-    plt.close()
+    # y_pred, y_true = np.asarray(y_pred), np.asarray(y_true)
+    # feature_maps = np.asarray(feature_maps)
+    # flattened_features = feature_maps.reshape(feature_maps.shape[0], -1)
+    # features_dir = os.path.join(save_dir, "latent_vectors")
+    # if not os.path.exists(features_dir):
+    #     os.makedirs(features_dir)
+    # y_pred_dir = os.path.join(save_dir, "y_pred")
+    # if not os.path.exists(y_pred_dir):
+    #     os.makedirs(y_pred_dir)
+    # np.save(
+    #     f"{features_dir}/latent_vecs_{model_name}_{output_name}.npy", flattened_features
+    # )
+    # np.save(f"{y_pred_dir}/y_pred_{model_name}_{output_name}.npy", y_pred)
+    # np.save(os.path.join(save_dir, "synt_paths_da.npy"), paths)
+    # np.save(os.path.join(save_dir, "synt_labels_da.npy"), labels)
 
-    return sklearn_report
+    # confusion_matrix_dir = os.path.join(save_dir, "confusion_matrix")
+    # if not os.path.exists(confusion_matrix_dir):
+    #     os.makedirs(confusion_matrix_dir)
+
+    # sklearn_report = classification_report(
+    #     y_true, y_pred, output_dict=True, target_names=classes
+    # )
+
+    # cf_matrix = confusion_matrix(y_true, y_pred)
+    # df_cm = pd.DataFrame(
+    #     cf_matrix, # / np.sum(cf_matrix, axis=1)[:, None],
+    #     index=[i for i in classes],
+    #     columns=[i for i in classes],
+    # )
+    # plt.figure(figsize=(12, 7))
+    # sn.heatmap(df_cm, annot=True)
+    # plt.title(f"Confusion Matrix")
+    # plt.savefig(
+    #     os.path.join(
+    #         confusion_matrix_dir, f"confusion_matrix_{model_name}_{output_name}.png"
+    #     ),
+    #     bbox_inches="tight",
+    # )
+    # plt.close()
+
+    # return sklearn_report
 
 
 @torch.no_grad()
@@ -291,8 +319,8 @@ def main(
     elif dataset == "astrogeo":
         transform = v2.ToDtype(torch.float32, scale=False)
 
-    # test_dataset = dataset_dict[dataset](x_test_path, y_test_path, transform=transform, target_domain=True)
-    # test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=True)
+    test_dataset = dataset_dict[dataset](x_test_path, y_test_path, transform=transform, target_domain=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=128)
 
     # test_dataset = FITSFolder("/data/zagorulia/val_fits")
     # c_idx = test_dataset.class_to_idx["0"]
@@ -302,12 +330,12 @@ def main(
     #     keep=[c_idx, d_idx],
     #     remap={c_idx: 0, d_idx: 1},
     # )
-    # filtered_class_names = ["point", "jet"]
-    # test_dataloader = DataLoader(final_test_ds, batch_size=128, shuffle=True)
+    # test_dataloader = DataLoader(final_test_ds, batch_size=128)
 
-    test_dataset = FITSFolder("/data/zagorulia/synt_14_02_26")
-    filtered_class_names = ["point", "jet"]
-    test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=True)
+    # test_dataset = FITSFolder("/data/zagorulia/synt_14_02_26")
+    # test_dataloader = DataLoader(test_dataset, batch_size=128)
+
+    filtered_class_names = ["Compact", "Extended"]
 
     models = load_models(model_dir, model_name, dataset)
     if not models:
@@ -356,14 +384,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset",
         type=str,
-        default="gz_evo",
+        default="astrogeo",
         help="Dataset to be used for evaluation",
     )
     parser.add_argument(
         "--model_path", type=str, required=True, help="Path to the trained models"
     )
     parser.add_argument(
-        "--x_test_path", type=str, required=False, help="Path to the x_test data"
+        "--x_test_path", type=str, default="/data/zagorulia/images_verApr2025", help="Path to the x_test data"
     )
     parser.add_argument(
         "--y_test_path", type=str, required=False, help="Path to the y_test data"

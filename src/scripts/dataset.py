@@ -3,7 +3,11 @@ import os
 from glob import glob
 import json
 
+from psycopg2 import connect
+from yaml import safe_load
+from munch import munchify
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 from pre.load import fits2numpy
@@ -298,6 +302,7 @@ class Astrogeo(Dataset):
 
         if target_domain:
             self.files = self._scan(input_path)
+            self.maps = self.connect_db()
         else:
             self.samples = []
 
@@ -321,6 +326,27 @@ class Astrogeo(Dataset):
         files.sort()
         return files
 
+    def connect_db(self):
+        with open(os.getenv("CONFIG_PATH")) as f:
+            cfg = munchify(safe_load(f))
+        config_db = cfg.db
+        cnx = connect(
+            host=config_db.host,
+            dbname=config_db.dbname,
+            user=config_db.user,
+            password=config_db.psswd,
+        )
+        query = (
+            "select file_name, pixel_size_x, pixel_size_y, b_maj, b_min "
+            "from maps_apr25_original "
+            "where pixel_size_x != -1 "
+            "and pixel_size_y != -1 "
+            "and b_maj != -1 "
+            "and b_min != -1 "
+        )
+        maps = pd.read_sql(query, con=cnx)
+        return maps
+
     def __len__(self):
         return len(self.files) if self.target_domain else len(self.samples)
 
@@ -333,11 +359,21 @@ class Astrogeo(Dataset):
         data = preprocess_lognorm(data_raw)
         x = torch.from_numpy(data).unsqueeze(0)
 
+        intensity = data_raw.sum()
+        cdelt1 = np.abs(self.maps.loc[idx].pixel_size_x) / 3.6e6
+        cdelt2 = np.abs(self.maps.loc[idx].pixel_size_y) / 3.6e6
+        omega_pixel = cdelt1 * cdelt2
+
+        bmaj = self.maps.loc[idx].b_maj
+        bmin = self.maps.loc[idx].b_min
+        omega_beam = np.pi / (4 * np.log(2)) * bmaj * bmin
+        intensity *= omega_pixel / omega_beam
+
         if self.transform is not None:
             x = self.transform(x)
 
         if self.target_domain:
-            return x
+            return x, path, intensity
     
         return x, label
 

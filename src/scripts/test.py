@@ -206,10 +206,14 @@ def compute_metrics(
     y_pred_dir = os.path.join(save_dir, "y_pred")
     if not os.path.exists(y_pred_dir):
         os.makedirs(y_pred_dir)
+    y_true_dir = os.path.join(save_dir, "y_true")
+    if not os.path.exists(y_true_dir):
+        os.makedirs(y_true_dir)
     np.save(
         f"{features_dir}/latent_vecs_{model_name}_{output_name}.npy", flattened_features
     )
     np.save(f"{y_pred_dir}/y_pred_{model_name}_{output_name}.npy", y_pred)
+    np.save(f"{y_true_dir}/y_true_{model_name}_{output_name}.npy", y_true)
 
     confusion_matrix_dir = os.path.join(save_dir, "confusion_matrix")
     if not os.path.exists(confusion_matrix_dir):
@@ -221,13 +225,13 @@ def compute_metrics(
 
     cf_matrix = confusion_matrix(y_true, y_pred)
     df_cm = pd.DataFrame(
-        cf_matrix / np.sum(cf_matrix, axis=1)[:, None],
+        cf_matrix,
         index=[i for i in classes],
         columns=[i for i in classes],
     )
-    plt.figure(figsize=(12, 7))
-    sn.heatmap(df_cm, annot=True)
-    plt.title(f"{model_name} Confusion Matrix")
+    plt.figure(figsize=(5, 5))
+    sn.heatmap(df_cm, annot=True, fmt="d")
+    plt.title("Confusion Matrix")
     plt.savefig(
         os.path.join(
             confusion_matrix_dir, f"confusion_matrix_{model_name}_{output_name}.png"
@@ -294,20 +298,20 @@ def main(
     # test_dataset = dataset_dict[dataset](x_test_path, y_test_path, transform=transform, target_domain=True)
     # test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=True)
 
-    # test_dataset = FITSFolder("/data/zagorulia/val_fits")
-    # c_idx = test_dataset.class_to_idx["0"]
-    # d_idx = test_dataset.class_to_idx["2"]
-    # final_test_ds = FilterAndRemap(
-    #     base_ds=test_dataset,
-    #     keep=[c_idx, d_idx],
-    #     remap={c_idx: 0, d_idx: 1},
-    # )
-    # filtered_class_names = ["point", "jet"]
-    # test_dataloader = DataLoader(final_test_ds, batch_size=128, shuffle=True)
+    test_dataset = FITSFolder("/data/zagorulia/val_fits")
+    c_idx = test_dataset.class_to_idx["0"]
+    d_idx = test_dataset.class_to_idx["2"]
+    final_test_ds = FilterAndRemap(
+        base_ds=test_dataset,
+        keep=[c_idx, d_idx],
+        remap={c_idx: 0, d_idx: 1},
+    )
+    test_dataloader = DataLoader(final_test_ds, batch_size=128, shuffle=True)
 
-    test_dataset = FITSFolder("/data/zagorulia/synt_14_02_26")
-    filtered_class_names = ["point", "jet"]
-    test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=True)
+    # test_dataset = FITSFolder("/data/zagorulia/synt_14_02_26")
+    # test_dataloader = DataLoader(test_dataset, batch_size=128, shuffle=True)
+
+    filtered_class_names = ["Compact", "Extended"]
 
     models = load_models(model_dir, model_name, dataset)
     if not models:

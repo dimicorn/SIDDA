@@ -221,7 +221,7 @@ def compute_metrics(
     df_results = pd.DataFrame.from_dict(results, orient="index")
     df_results = df_results.reset_index().rename(columns={"index": "path"})
 
-    df_results.to_csv(f"{model_name}_astrogeo_predictions.csv", index=False)
+    df_results.to_csv(f"astrogeo_predictions_{model_name}_{output_name}.csv", index=False)
 
     # y_pred, y_true = np.asarray(y_pred), np.asarray(y_true)
     # feature_maps = np.asarray(feature_maps)

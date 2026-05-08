@@ -231,7 +231,7 @@ def compute_metrics(
     )
     plt.figure(figsize=(5, 5))
     sn.heatmap(df_cm, annot=True, fmt="d")
-    plt.title("Confusion Matrix")
+    # plt.title("Confusion Matrix")
     plt.savefig(
         os.path.join(
             confusion_matrix_dir, f"confusion_matrix_{model_name}_{output_name}.png"
